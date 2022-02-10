@@ -9,6 +9,8 @@ users = {
   john:     { first_name: 'John', last_name: 'Smith', age: 28 }
 }
 
+deleted_users = {}
+
 helpers do
 
   def json_or_default?(type)
@@ -27,7 +29,7 @@ helpers do
       return 'xml' if xml?(type)
     end
 
-    halt 406, 'Not Acceptable'
+    'json'
   end
 
   def type
@@ -66,12 +68,31 @@ get '/users' do
 end
 
 post '/users' do
-  user = JSON.parse(request.body.read)
-  users[user['first_name'].downcase.to_sym] = user
+  halt 415 unless request.env['CONTENT_TYPE'] == 'application/json'
 
+  begin
+    user = JSON.parse(request.body.read)
+  rescue JSON::ParserError => e
+    halt 400, send_data(json: -> { { message: e.to_s } },
+                        xml:  -> { { message: e.to_s } })
+  end
+
+  if users[user['first_name'].downcase.to_sym]
+    message = { message: "User #{user['first_name']} already in DB." }
+    halt 409, send_data(json: -> { message },
+                        xml:  -> { message })
+  end
+
+  users[user['first_name'].downcase.to_sym] = user
   url = "http://localhost:4567/users/#{user['first_name']}"
   response.headers['Location'] = url
   status 201
+end
+
+[:put, :patch, :delete].each do |method|
+  send(method, '/users') do
+    halt 405
+  end
 end
 
 # /users/:first_name
@@ -81,6 +102,9 @@ options '/users/:first_name' do
 end
 
 get '/users/:first_name' do |first_name|
+  halt 410 if deleted_users[first_name.to_sym]
+  halt 404 unless users[first_name.to_sym]
+
   send_data(json: -> { users[first_name.to_sym].merge(id: first_name) },
             xml:  -> { { first_name => users[first_name.to_sym] } })
 end
@@ -105,6 +129,8 @@ patch '/users/:first_name' do |first_name|
 end
 
 delete '/users/:first_name' do |first_name|
-  users.delete(first_name.to_sym)
+  first_name = first_name.to_sym
+  deleted_users[first_name] = users[first_name] if users[first_name]
+  users.delete(first_name)
   status 204
 end
